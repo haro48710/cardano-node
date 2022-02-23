@@ -38,6 +38,7 @@ import           System.Directory (canonicalizePath, createDirectoryIfMissing, m
 import           System.Environment (lookupEnv)
 
 #ifdef UNIX
+import           GHC.Weak (deRefWeak)
 import           System.Posix.Files
 import qualified System.Posix.Signals as Signals
 import           System.Posix.Types (FileMode)
@@ -105,6 +106,23 @@ runNode
   :: PartialNodeConfiguration
   -> IO ()
 runNode cmdPc = do
+    -- Workaround to ensure that the main thread throws an async exception on
+    -- receiving a SIGTERM signal.
+#ifdef UNIX
+    -- Similar implementation to the RTS's handling of SIGINT (see GHC's
+    -- TopHandler.hs)
+    runThreadIdWk <- mkWeakThreadId =<< myThreadId
+    void $ Signals.installHandler
+      Signals.sigTERM
+      (Signals.CatchOnce $ do
+        runThreadIdMay <- deRefWeak runThreadIdWk
+        case runThreadIdMay of
+          Nothing -> return ()
+          Just runThreadId -> killThread runThreadId
+      )
+      Nothing
+#endif
+
     -- TODO: Remove sodiumInit: https://github.com/input-output-hk/cardano-base/issues/175
     Crypto.sodiumInit
 
