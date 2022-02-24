@@ -44,7 +44,7 @@ let
 
       installPhase = ''
         mkdir -p         $out/bin
-        cp -a wb profiles *.sh *.jq $out/bin
+        cp -a wb chain-filters profiles *.sh *.jq $out/bin
       '';
 
       dontStrip = true;
@@ -213,9 +213,47 @@ let
         };
     in { inherit profile profileOut; };
 
+  run-analysis =
+    { pkgs, run, trace ? false }:
+    let profile = { name = "stub"; }; #__fromJSON (__readFile "${run}/profile.json");
+    in
+    pkgs.runCommand "workbench-run-analysis-${profile.name}"
+      { requiredSystemFeatures = [ "benchmark" ];
+        nativeBuildInputs = with haskellPackages; with pkgs; [
+          bash
+          bech32
+          coreutils
+          gnused
+          jq
+          moreutils
+          nixWrapped
+          psmisc
+          python3Packages.supervisor
+          workbench
+        ];
+      }
+      ''
+      echo "analysing run:  ${run}"
+      mkdir -p $out
+
+      ln -s ${run} $out/run
+
+      args=(
+          ${optionalString trace "--trace"}
+          analyse
+          --filters size-full
+          --outdir  $out
+          standard
+          ${run}
+           )
+      echo "wb ''${args[*]}" > $out/wb-invocation.sh
+
+      wb ''${args[@]}
+      '';
 in
+
 {
-  inherit workbench runWorkbench runJq with-workbench-profile;
+  inherit workbench runWorkbench runJq with-workbench-profile run-analysis;
 
   inherit generateProfiles profileOutput shellHook;
 }

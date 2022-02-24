@@ -47,7 +47,9 @@ let
 
   clusterCabal = workbench-supervisord { inherit profileName haskellPackages; useCabalRun = true; };
   clusterNix   = workbench-supervisord { inherit profileName haskellPackages; useCabalRun = false; };
-  workbench-smoke-test = clusterNix.profile-run-supervisord { profileName = "smoke-alzo"; };
+  workbench-smoke-test     = clusterNix.profile-run-supervisord { profileName = "smoke-alzo"; };
+  workbench-smoke-analysis = clusterNix.workbench.run-analysis
+    { inherit pkgs; run = workbench-smoke-test; trace = true; };
 
   packages = {
     inherit haskellPackages shell
@@ -56,7 +58,7 @@ let
       locli locli-profiled
       tx-generator tx-generator-profiled
       scripts environments dockerImage submitApiDockerImage bech32
-      clusterNix clusterCabal workbench-smoke-test;
+      clusterNix clusterCabal workbench-smoke-test workbench-smoke-analysis;
 
     devopsShell = shell.devops;
 
