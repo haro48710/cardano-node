@@ -38,7 +38,8 @@ import           Cardano.Node.Queries (NodeKernelData)
 import           Cardano.Node.Startup
 import           Cardano.Node.TraceConstraints
 import           Cardano.Node.Tracing
-import           Cardano.Node.Tracing.StateRep (NodeState (..))
+import           Cardano.Node.Tracing.Peers
+import           Cardano.Node.Tracing.StateRep
 import           "contra-tracer" Control.Tracer (Tracer (..))
 import           Ouroboros.Consensus.Ledger.Inspect (LedgerEvent)
 import           Ouroboros.Consensus.MiniProtocol.ChainSync.Client (TraceChainSyncClientEvent)
@@ -91,6 +92,10 @@ mkDispatchTracers nodeKernel trBase trForward mbTrEKG trDataPoint trConfig enabl
     nodeStateTr <- mkDataPointTracer
                 trDataPoint
                 (const ["NodeState"])
+
+    nodePeersTr <- mkDataPointTracer
+                trDataPoint
+                (const ["NodePeers"])
 
     -- Resource tracer
     resourcesTr <- mkCardanoTracer
@@ -185,25 +190,19 @@ mkDispatchTracers nodeKernel trBase trForward mbTrEKG trDataPoint trConfig enabl
     diffusionTrExtra :: Diffusion.ExtraTracers p2p <-
       mkDiffusionTracersExtra trBase trForward mbTrEKG trDataPoint trConfig enableP2P
     pure Tracers
-      { chainDBTracer = Tracer (traceWith chainDBTr')
-                        <> Tracer (traceWith replayBlockTr')
+      { chainDBTracer = Tracer (\x -> traceWith chainDBTr' x >> traceNodeStateChainDB nodeStateTr x)
+                     <> Tracer (\x -> traceWith replayBlockTr' x >> traceNodeStateChainDB nodeStateTr x)
       , consensusTracers = consensusTr
       , nodeToClientTracers = nodeToClientTr
       , nodeToNodeTracers = nodeToNodeTr
       , diffusionTracers = diffusionTr
       , diffusionTracersExtra = diffusionTrExtra
-      , startupTracer = Tracer $ \x -> do
-                          traceWith startupTr x
-                          traceWith nodeStateTr $ NodeStartup (ppStartupInfoTrace x)
-      , shutdownTracer = Tracer $ \x -> do
-                           traceWith shutdownTr x
-                           traceWith nodeStateTr $ NodeShutdown x
+      , startupTracer = Tracer $ \x -> traceWith startupTr x >> traceNodeStateStartup nodeStateTr x
+      , shutdownTracer = Tracer $ \x -> traceWith shutdownTr x >> traceNodeStateShutdown nodeStateTr x
       , nodeInfoTracer = Tracer (traceWith nodeInfoTr)
       , nodeStateTracer = Tracer (traceWith nodeStateTr)
       , resourcesTracer = Tracer (traceWith resourcesTr)
-      , peersTracer = Tracer $ \x -> do
-                        traceWith peersTr x
-                        traceWith nodeStateTr $ NodePeers (map ppPeer x)
+      , peersTracer = Tracer $ \x -> traceWith peersTr x >> traceNodePeers nodePeersTr x
     }
 
 mkConsensusTracers :: forall blk.

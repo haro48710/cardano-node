@@ -114,7 +114,7 @@ data BasicInfoCommon = BasicInfoCommon {
   , biVersion       :: Text
   , biCommit        :: Text
   , biNodeStartTime :: UTCTime
-  }
+  } deriving Show
 
 data BasicInfoShelleyBased = BasicInfoShelleyBased {
     bisEra               :: Text
@@ -122,20 +122,20 @@ data BasicInfoShelleyBased = BasicInfoShelleyBased {
   , bisSlotLength        :: NominalDiffTime
   , bisEpochLength       :: Word64
   , bisSlotsPerKESPeriod :: Word64
-}
+  } deriving Show
 
 data BasicInfoByron = BasicInfoByron {
     bibSystemStartTime :: UTCTime
   , bibSlotLength      :: NominalDiffTime
   , bibEpochLength     :: Word64
-}
+  } deriving Show
 
 data BasicInfoNetwork = BasicInfoNetwork {
     niAddresses     :: [SocketOrSocketInfo Socket.SockAddr Socket.SockAddr]
   , niDiffusionMode :: DiffusionMode
   , niDnsProducers  :: [DnsSubscriptionTarget]
   , niIpProducers   :: IPSubscriptionTarget
-  }
+  } deriving Show
 
 data NodeInfo = NodeInfo
   { niName            :: Text
