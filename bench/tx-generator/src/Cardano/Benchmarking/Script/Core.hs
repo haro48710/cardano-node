@@ -467,8 +467,8 @@ importGenesisFund wallet submitMode genesisKeyName destKey = do
     Left err -> liftTxGenError err
     Right ((txIn, outVal), skey) -> addFundToWallet txIn outVal skey
   
-initGlobalWallet :: ActionM ()
-initGlobalWallet = liftIO initWallet >>= set globalWallet
+initWallet :: WalletName -> ActionM ()
+initWallet name = liftIO Wallet.initWallet >>= setName name
 
 createChange :: WalletName -> WalletName -> SubmitMode -> PayMode -> Lovelace -> Int -> ActionM ()
 createChange sourceWallet dstWallet submitMode payMode value count = case payMode of

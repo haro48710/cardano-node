@@ -43,12 +43,6 @@ data Store v where
   Named        :: Name x -> Store x
   ProtocolParameterMode :: Store ProtocolParameterMode
 
-globalWalletName :: WalletName
-globalWalletName = WalletName "obsoleteGlobalWallet"
-
-globalWallet :: Store WalletRef
-globalWallet = Named globalWalletName
-
 data Name x where
   KeyName      :: !String -> Name (SigningKey PaymentKey)
   ThreadName   :: !String -> Name AsyncBenchmarkControl

@@ -24,6 +24,7 @@ import           Cardano.Benchmarking.Types (TPSRate, NumberOfTxs)
 data Action where
   Set                :: !SetKeyVal -> Action
 --  Declare            :: SetKeyVal   -> Action --declare (once): error if key was set before
+  InitWallet         :: !WalletName -> Action
   StartProtocol      :: !FilePath -> Action
   Delay              :: !Double -> Action
   ReadSigningKey     :: !KeyName -> !SigningKeyFile -> Action

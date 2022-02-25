@@ -18,19 +18,19 @@ import           Cardano.Api
 import           Cardano.Benchmarking.Types
 import           Cardano.Benchmarking.NixOptions
 import           Cardano.Benchmarking.Script.Setters
-import           Cardano.Benchmarking.Script.Store (Name(..), globalWalletName)
+import           Cardano.Benchmarking.Script.Store (Name(..))
 import           Cardano.Benchmarking.Script.Types
 
 data CompileError where
   SomeCompilerError :: CompileError
   deriving (Show)
-type Compiler a = RWST NixServiceOptions (DList Action) () (Except CompileError) a
+type Compiler a = RWST NixServiceOptions (DList Action) Int (Except CompileError) a
 
 compileOptions :: NixServiceOptions -> Either CompileError [Action]
 compileOptions = runCompiler compileToScript
 
 runCompiler :: Compiler () -> NixServiceOptions -> Either CompileError [Action]
-runCompiler c o = case runExcept $ runRWST c o () of
+runCompiler c o = case runExcept $ runRWST c o 0 of
   Left err -> Left err
   Right ((), _ , l) -> Right $ DL.toList l
 
@@ -43,7 +43,7 @@ compileToScript :: Compiler ()
 compileToScript = do
   initConstants
   emit . StartProtocol =<< askNixOption _nix_nodeConfigFile
-  importGenesisFunds
+  wallet <- importGenesisFunds
   initCollaterals
   splittingPhase
   benchmarkingPhase
@@ -67,23 +67,27 @@ initConstants = do
     setN :: Tag v -> (NixServiceOptions -> v) -> Compiler ()
     setN key s = askNixOption s >>= setConst key
 
-importGenesisFunds :: Compiler ()
+importGenesisFunds :: Compiler WalletName
 importGenesisFunds = do
+  wallet <- WalletName <$> newIdentifier
+  emit $ InitWallet wallet
   cmd1 (ReadSigningKey $ KeyName "pass-partout") _nix_sigKey
-  emit $ ImportGenesisFund globalWalletName LocalSocket (KeyName "pass-partout") (KeyName "pass-partout")
+  emit $ ImportGenesisFund wallet LocalSocket (KeyName "pass-partout") (KeyName "pass-partout")
   delay
+  return wallet
 
-initCollaterals :: Compiler ()
-initCollaterals = do
+-- Todo: will not work !!
+initCollaterals :: WalletName -> Compiler ()
+initCollaterals wallet = do
   isAnyPlutusMode >>= \case
     False -> return ()
     True -> do
       tx_fee <- askNixOption _nix_tx_fee
       safeCollateral <- _safeCollateral <$> evilFeeMagic
-      emit $ CreateChange globalWalletName globalWalletName LocalSocket (PayToAddr $ KeyName "pass-partout") (safeCollateral + tx_fee) 1
-      emit $ CreateChange globalWalletName globalWalletName LocalSocket (PayToCollateral $ KeyName "pass-partout") safeCollateral 1
+      emit $ CreateChange wallet wallet LocalSocket (PayToAddr $ KeyName "pass-partout") (safeCollateral + tx_fee) 1
+      emit $ CreateChange wallet wallet LocalSocket (PayToCollateral $ KeyName "pass-partout") safeCollateral 1
 
-splittingPhase :: Compiler ()
+splittingPhase :: WalletName -> Compiler WalletName
 splittingPhase = do
   (NumberOfTxs tx_count) <- askNixOption _nix_tx_count
   (NumberOfInputsPerTx inputs_per_tx) <- askNixOption _nix_inputs_per_tx
@@ -92,36 +96,40 @@ splittingPhase = do
   if plutus then createChangeRecursivePlutus minValuePerInput (tx_count * inputs_per_tx)
             else createChangeRecursive       minValuePerInput (tx_count * inputs_per_tx)
  where
-  createChangeRecursive :: Lovelace -> Int -> Compiler ()
-  createChangeRecursive value count = do
+  createChangeRecursive :: WalletName -> Lovelace -> Int -> Compiler WalletName
+  createChangeRecursive inWallet value count = do
     when (count > 30) $ do
       tx_fee <- askNixOption _nix_tx_fee
-      createChangeRecursive (value * 30 + tx_fee) (count `div` 30 + 1)
-    createChange value count
+      w2 <- createChangeRecursive (value * 30 + tx_fee) (count `div` 30 + 1)
+    createChange w2 value count
 
-  createChangeRecursivePlutus :: Lovelace -> Int -> Compiler ()
-  createChangeRecursivePlutus value count = do
+  createChangeRecursivePlutus :: WalletName -> Lovelace -> Int -> Compiler WalletName
+  createChangeRecursivePlutus inWallet value count = do
     when (count > 30) $ do
       tx_fee <- askNixOption _nix_tx_fee
-      createChangeRecursive (value * 30 + tx_fee) (count `div` 30 + 1)
-    createChangePlutus value count
+      w2 <- createChangeRecursive (value * 30 + tx_fee) (count `div` 30 + 1)
+    createChangePlutus w2 value count
   
-  createChange :: Lovelace -> Int -> Compiler ()
-  createChange value count = do
-     emit $ CreateChange globalWalletName globalWalletName LocalSocket (PayToAddr $ KeyName "pass-partout") value count
+  createChange :: WalletName -> Lovelace -> Int -> Compiler WalletName
+  createChange inWallet value count = do
+     outWallet <- WalletName <$> newIdentifier
+     initWallet outWallet
+     emit $ CreateChange inWallet outWallet LocalSocket (PayToAddr $ KeyName "pass-partout") value count
      delay
 
-  createChangePlutus :: Lovelace -> Int -> Compiler ()
-  createChangePlutus value count = do
+  createChangePlutus :: WalletName -> Lovelace -> Int -> Compiler WalletName
+  createChangePlutus inWallet value count = do
+     outWallet <- WalletName <$> newIdentifier
+     initWallet outWallet
      autoMode <- isPlutusAutoMode
      plutusTarget <- if autoMode
        then PayToScript <$> askNixOption _nix_plutusLoopScript <*> pure (ScriptDataNumber 0)
        else PayToScript <$> askNixOption _nix_plutusScript     <*> (ScriptDataNumber <$> askNixOption _nix_plutusData)
-     emit $ CreateChange globalWalletName globalWalletName LocalSocket plutusTarget value count
+     emit $ CreateChange inWallet outWallet LocalSocket plutusTarget value count
      delay
 
-benchmarkingPhase :: Compiler ()
-benchmarkingPhase = do
+benchmarkingPhase :: WalletName -> Compiler ()
+benchmarkingPhase wallet = do
   debugMode <- askNixOption _nix_debugMode
   plutusMode <- askNixOption _nix_plutusMode
   plutusAutoMode <- askNixOption _nix_plutusAutoMode
@@ -140,7 +148,7 @@ benchmarkingPhase = do
                   <*> (ScriptDataNumber <$> askNixOption _nix_plutusData)
                   <*> (ScriptDataNumber <$> askNixOption _nix_plutusRedeemer)
     (False,False) ->  return SpendOutput
-  emit $ RunBenchmark globalWalletName target spendMode (ThreadName "tx-submit-benchmark") tx_count tps
+  emit $ RunBenchmark wallet target spendMode (ThreadName "tx-submit-benchmark") tx_count tps
   unless debugMode $ do
     emit $ WaitBenchmark $ ThreadName "tx-submit-benchmark"
 
@@ -191,3 +199,9 @@ isPlutusAutoMode = askNixOption _nix_plutusAutoMode
 
 isAnyPlutusMode :: Compiler Bool
 isAnyPlutusMode = liftA2 (||) isPlutusMode isPlutusAutoMode
+
+newIdentifier :: String -> Compiler String
+newIdentifier prefix = do
+  n <- get
+  put $ succ n
+  return $ prefix ++ "_" ++ show n

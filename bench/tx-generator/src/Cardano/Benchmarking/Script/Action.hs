@@ -12,6 +12,7 @@ import           Cardano.Benchmarking.Script.Types
 action :: Action -> ActionM ()
 action a = case a of
   Set (key :=> (Identity val)) -> set (User key) val
+  InitWallet name -> initWallet name
   SetProtocolParameters p -> setProtocolParameters p
   StartProtocol filePath -> startProtocol filePath
   ReadSigningKey name filePath -> readSigningKey name filePath
