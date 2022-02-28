@@ -60,6 +60,7 @@ testScript =
   , Reserved []
   ]
  where
+  globalWalletName = WalletName "test_wallet"
   scriptDef = SpendScript "filePath" (StaticScriptBudget $ ExecutionUnits 70000000 70000000) (ScriptDataNumber 3) (ScriptDataNumber 6)
   passPartout = KeyName "pass-partout"
 

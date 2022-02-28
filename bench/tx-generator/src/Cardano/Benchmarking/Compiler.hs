@@ -18,7 +18,7 @@ import           Cardano.Api
 import           Cardano.Benchmarking.Types
 import           Cardano.Benchmarking.NixOptions
 import           Cardano.Benchmarking.Script.Setters
-import           Cardano.Benchmarking.Script.Store (Name(..))
+import           Cardano.Benchmarking.Script.Store (Name(..), WalletName)
 import           Cardano.Benchmarking.Script.Types
 
 data CompileError where
@@ -34,8 +34,8 @@ runCompiler c o = case runExcept $ runRWST c o 0 of
   Left err -> Left err
   Right ((), _ , l) -> Right $ DL.toList l
 
-testCompiler :: Compiler a -> NixServiceOptions -> Either CompileError (a, (), [Action])
-testCompiler c o = case runExcept $ runRWST c o () of
+testCompiler :: Compiler a -> NixServiceOptions -> Either CompileError (a, Int, [Action])
+testCompiler c o = case runExcept $ runRWST c o 0 of
   Left err -> Left err
   Right (a, s , l) -> Right (a, s, DL.toList l)
 
@@ -43,10 +43,12 @@ compileToScript :: Compiler ()
 compileToScript = do
   initConstants
   emit . StartProtocol =<< askNixOption _nix_nodeConfigFile
-  wallet <- importGenesisFunds
-  initCollaterals
-  splittingPhase
-  benchmarkingPhase
+  genesisWallet <- newWalletName "genesis_wallet"
+  initWallet genesisWallet
+  importGenesisFunds genesisWallet
+  initCollaterals genesisWallet
+  splitWallet <- splittingPhase genesisWallet
+  benchmarkingPhase splitWallet
 
 initConstants :: Compiler ()
 initConstants = do
@@ -67,14 +69,12 @@ initConstants = do
     setN :: Tag v -> (NixServiceOptions -> v) -> Compiler ()
     setN key s = askNixOption s >>= setConst key
 
-importGenesisFunds :: Compiler WalletName
-importGenesisFunds = do
-  wallet <- WalletName <$> newIdentifier
-  emit $ InitWallet wallet
+importGenesisFunds :: WalletName -> Compiler ()
+importGenesisFunds wallet = do
+  initWallet wallet
   cmd1 (ReadSigningKey $ KeyName "pass-partout") _nix_sigKey
   emit $ ImportGenesisFund wallet LocalSocket (KeyName "pass-partout") (KeyName "pass-partout")
   delay
-  return wallet
 
 -- Todo: will not work !!
 initCollaterals :: WalletName -> Compiler ()
@@ -88,38 +88,43 @@ initCollaterals wallet = do
       emit $ CreateChange wallet wallet LocalSocket (PayToCollateral $ KeyName "pass-partout") safeCollateral 1
 
 splittingPhase :: WalletName -> Compiler WalletName
-splittingPhase = do
+splittingPhase srcWallet = do
   (NumberOfTxs tx_count) <- askNixOption _nix_tx_count
   (NumberOfInputsPerTx inputs_per_tx) <- askNixOption _nix_inputs_per_tx
   minValuePerInput <- _minValuePerInput <$> evilFeeMagic
   plutus <- isAnyPlutusMode
-  if plutus then createChangeRecursivePlutus minValuePerInput (tx_count * inputs_per_tx)
-            else createChangeRecursive       minValuePerInput (tx_count * inputs_per_tx)
+  if plutus then createChangeRecursivePlutus srcWallet minValuePerInput (tx_count * inputs_per_tx)
+            else createChangeRecursive       srcWallet minValuePerInput (tx_count * inputs_per_tx)
  where
   createChangeRecursive :: WalletName -> Lovelace -> Int -> Compiler WalletName
   createChangeRecursive inWallet value count = do
-    when (count > 30) $ do
-      tx_fee <- askNixOption _nix_tx_fee
-      w2 <- createChangeRecursive (value * 30 + tx_fee) (count `div` 30 + 1)
-    createChange w2 value count
-
+    if count > 30
+      then do
+        tx_fee <- askNixOption _nix_tx_fee
+        w2 <- createChangeRecursive inWallet (value * 30 + tx_fee) (count `div` 30 + 1)
+        createChange w2 value count
+      else createChange inWallet value count
+      
   createChangeRecursivePlutus :: WalletName -> Lovelace -> Int -> Compiler WalletName
   createChangeRecursivePlutus inWallet value count = do
-    when (count > 30) $ do
-      tx_fee <- askNixOption _nix_tx_fee
-      w2 <- createChangeRecursive (value * 30 + tx_fee) (count `div` 30 + 1)
-    createChangePlutus w2 value count
+    if count > 30
+      then do
+        tx_fee <- askNixOption _nix_tx_fee
+        w2 <- createChangeRecursive inWallet (value * 30 + tx_fee) (count `div` 30 + 1)
+        createChangePlutus w2 value count
+      else createChangePlutus inWallet value count
   
   createChange :: WalletName -> Lovelace -> Int -> Compiler WalletName
   createChange inWallet value count = do
-     outWallet <- WalletName <$> newIdentifier
-     initWallet outWallet
+     outWallet <- newWalletName "create_change"
+     emit $ InitWallet outWallet
      emit $ CreateChange inWallet outWallet LocalSocket (PayToAddr $ KeyName "pass-partout") value count
      delay
+     return outWallet
 
   createChangePlutus :: WalletName -> Lovelace -> Int -> Compiler WalletName
   createChangePlutus inWallet value count = do
-     outWallet <- WalletName <$> newIdentifier
+     outWallet <- newWalletName "create_change_plutus"
      initWallet outWallet
      autoMode <- isPlutusAutoMode
      plutusTarget <- if autoMode
@@ -127,6 +132,7 @@ splittingPhase = do
        else PayToScript <$> askNixOption _nix_plutusScript     <*> (ScriptDataNumber <$> askNixOption _nix_plutusData)
      emit $ CreateChange inWallet outWallet LocalSocket plutusTarget value count
      delay
+     return outWallet
 
 benchmarkingPhase :: WalletName -> Compiler ()
 benchmarkingPhase wallet = do
@@ -205,3 +211,9 @@ newIdentifier prefix = do
   n <- get
   put $ succ n
   return $ prefix ++ "_" ++ show n
+
+initWallet :: WalletName -> Compiler ()
+initWallet n = emit $ InitWallet n
+
+newWalletName :: String -> Compiler WalletName
+newWalletName n = WalletName <$> newIdentifier n

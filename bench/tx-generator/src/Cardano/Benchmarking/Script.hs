@@ -19,7 +19,7 @@ import           Cardano.Node.Configuration.Logging (shutdownLoggingLayer)
 import           Cardano.Benchmarking.Tracer (createDebugTracers)
 import           Cardano.Benchmarking.Script.Action
 import           Cardano.Benchmarking.Script.Aeson (parseScriptFileAeson)
-import           Cardano.Benchmarking.Script.Core (initWallet, setProtocolParameters)
+import           Cardano.Benchmarking.Script.Core (setProtocolParameters)
 import           Cardano.Benchmarking.Script.Env
 import           Cardano.Benchmarking.Script.Store
 import           Cardano.Benchmarking.Script.Types

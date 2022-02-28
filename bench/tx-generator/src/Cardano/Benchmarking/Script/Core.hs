@@ -116,12 +116,12 @@ addFund wallet txIn lovelace keyName = do
     mkOutValue :: forall era. IsShelleyBasedEra era => AsType era -> ActionM (InAnyCardanoEra TxOutValue)
     mkOutValue = \_ -> return $ InAnyCardanoEra (cardanoEra @ era) (mkTxOutValueAdaOnly lovelace)
   outValue <- withEra mkOutValue
-  addFundToWallet txIn outValue fundKey
+  addFundToWallet wallet txIn outValue fundKey
 
-addFundToWallet :: TxIn -> InAnyCardanoEra TxOutValue -> SigningKey PaymentKey -> ActionM ()
-addFundToWallet txIn outVal skey = do
-  wallet <- get globalWallet
-  liftIO (walletRefInsertFund wallet (FundSet.Fund $ mkFund outVal))
+addFundToWallet :: WalletName -> TxIn -> InAnyCardanoEra TxOutValue -> SigningKey PaymentKey -> ActionM ()
+addFundToWallet wallet txIn outVal skey = do
+  walletRef <- getName wallet
+  liftIO (walletRefInsertFund walletRef (FundSet.Fund $ mkFund outVal))
   where
     mkFund = liftAnyEra $ \value -> FundInEra {
            _fundTxIn = txIn
@@ -265,7 +265,8 @@ runBenchmarkInEra sourceWallet submitMode (ThreadName threadName) txCount tps er
   fee <- getUser TFee
   minValuePerUTxO <- getUser TMinValuePerUTxO
   protocolParameters <- getProtocolParameters
-  walletRef <- get globalWallet
+  walletRefSrc <- getName sourceWallet
+  let walletRefDst = walletRefSrc 
   metadata <- makeMetadata
   connectClient <- getConnectClient
   let
@@ -280,7 +281,7 @@ runBenchmarkInEra sourceWallet submitMode (ThreadName threadName) txCount tps er
 --    fundSource :: FundSet.Target -> FundSet.FundSource
 --    fundSource target = mkWalletFundSource walletRef $ FundSet.selectInputs ConfirmedBeforeReuse numInputs minTxValue PlainOldFund target
 
-  fundSource <- liftIO (mkBufferedSource walletRef
+  fundSource <- liftIO (mkBufferedSource walletRefSrc
                    (fromIntegral (unNumberOfTxs txCount) * numInputs)
                    minValuePerInput
                    PlainOldFund numInputs) >>= \case
@@ -296,10 +297,10 @@ runBenchmarkInEra sourceWallet submitMode (ThreadName threadName) txCount tps er
     toUTxO :: FundSet.Target -> FundSet.SeqNumber -> ToUTxO era
     toUTxO target seqNumber = Wallet.mkUTxO networkId fundKey (InFlight target seqNumber)
 
-    fundToStore = mkWalletFundStore walletRef
+    fundToStore = mkWalletFundStore walletRefDst
 
     walletScript :: FundSet.Target -> WalletScript era
-    walletScript = benchmarkWalletScript walletRef txGenerator txCount (const fundSource) inToOut toUTxO fundToStore
+    walletScript = benchmarkWalletScript walletRefSrc txGenerator txCount (const fundSource) inToOut toUTxO fundToStore
 
     coreCall :: AsType era -> ExceptT TxGenError IO AsyncBenchmarkControl
     coreCall eraProxy = GeneratorTx.walletBenchmark (btTxSubmit_ tracers) (btN2N_ tracers) connectClient
@@ -334,12 +335,15 @@ runPlutusBenchmark sourceWallet submitMode scriptFile scriptBudget scriptData sc
   executionUnitPrices <- case protocolParamPrices protocolParameters of
     Just x -> return x
     Nothing -> throwE $ WalletError "unexpected protocolParamPrices == Nothing in runPlutusBenchmark"
-  walletRef <- get globalWallet
+  walletRefSrc <- getName sourceWallet
+  let
+    walletRefDst = walletRefSrc -- TODO
+    walletRefCollateral = error "Core: walletRefCollateral"
   fundKey <- getName $ KeyName "pass-partout"
   script <- liftIO $ PlutusExample.readScript scriptFile
   -- This does not remove the collateral from the wallet, i.e. same collateral is uses for everything.
   -- This is fine unless a script ever fails.
-  collateralFunds <- liftIO ( askWalletRef walletRef (FundSet.selectCollateral . walletFunds)) >>= \case
+  collateralFunds <- liftIO ( askWalletRef walletRefCollateral (FundSet.selectCollateral . walletFunds)) >>= \case
     Right c -> return c
     Left err -> throwE $ WalletError err
   baseFee <- getUser TFee
@@ -389,7 +393,7 @@ runPlutusBenchmark sourceWallet submitMode scriptFile scriptBudget scriptData sc
 --    fundSource :: FundSet.Target -> FundSet.FundSource
 --    fundSource target = mkWalletFundSource walletRef $ FundSet.selectInputs ConfirmedBeforeReuse numInputs minTxValue PlainOldFund target
 
-  fundSource <- liftIO (mkBufferedSource walletRef
+  fundSource <- liftIO (mkBufferedSource walletRefSrc
                    (fromIntegral (unNumberOfTxs txCount) * numInputs)
                    minValuePerInput
                    (PlutusScriptFund scriptFile scriptData) numInputs) >>= \case
@@ -414,13 +418,13 @@ runPlutusBenchmark sourceWallet submitMode scriptFile scriptBudget scriptData sc
     collateral = (TxInsCollateral CollateralInAlonzoEra $  map getFundTxIn collateralFunds, collateralFunds)
     txGenerator = genTx protocolParameters collateral (mkFee totalFee) metadata (ScriptWitness ScriptWitnessForSpending scriptWitness)
 
-    fundToStore = mkWalletFundStore walletRef
+    fundToStore = mkWalletFundStore walletRefDst
 
     toUTxO :: FundSet.Target -> FundSet.SeqNumber -> ToUTxO AlonzoEra
     toUTxO target seqNumber = Wallet.mkUTxO networkId fundKey (InFlight target seqNumber)
 
     walletScript :: FundSet.Target -> WalletScript AlonzoEra
-    walletScript = benchmarkWalletScript walletRef txGenerator txCount (const fundSource) inToOut toUTxO fundToStore
+    walletScript = benchmarkWalletScript walletRefSrc txGenerator txCount (const fundSource) inToOut toUTxO fundToStore
 
   case submitMode of
     NodeToNode -> do
@@ -465,7 +469,7 @@ importGenesisFund wallet submitMode genesisKeyName destKey = do
   result <- liftCoreWithEra coreCall
   case result of 
     Left err -> liftTxGenError err
-    Right ((txIn, outVal), skey) -> addFundToWallet txIn outVal skey
+    Right ((txIn, outVal), skey) -> addFundToWallet wallet txIn outVal skey
   
 initWallet :: WalletName -> ActionM ()
 initWallet name = liftIO Wallet.initWallet >>= setName name
@@ -480,7 +484,7 @@ createChange sourceWallet dstWallet submitMode payMode value count = case payMod
 
 createChangeScriptFunds :: WalletName -> WalletName -> SubmitMode -> FilePath -> ScriptData -> Lovelace -> Int -> ActionM ()
 createChangeScriptFunds sourceWallet dstWallet submitMode scriptFile scriptData value count = do
-  walletRef <- get globalWallet
+  walletRef <- getName dstWallet
   networkId <- getUser TNetworkId
   protocolParameters <- getProtocolParameters
   _fundKey <- getName $ KeyName "pass-partout"
@@ -516,8 +520,8 @@ createChangeInEra :: forall era. IsShelleyBasedEra era
   -> ActionM ()
 createChangeInEra sourceWallet dstWallet submitMode variant keyName value count _proxy = do
   networkId <- getUser TNetworkId
+  walletRef <- getName dstWallet
   fee <- getUser TFee
-  walletRef <- get globalWallet
   protocolParameters <- getProtocolParameters
   fundKey <- getName keyName
   let
@@ -537,7 +541,7 @@ createChangeInEra sourceWallet dstWallet submitMode variant keyName value count 
                                                   fundSource inOut toUTxO fundToStore
       return $ fmap txInModeCardano tx
     addressMsg = Text.unpack $ serialiseAddress $ keyAddress @ era networkId fundKey
-  createChangeGeneric  sourceWallet dstWallet submitMode createCoins addressMsg value count
+  createChangeGeneric sourceWallet dstWallet submitMode createCoins addressMsg value count
 
 createChangeGeneric ::
      WalletName
@@ -550,7 +554,7 @@ createChangeGeneric ::
   -> ActionM ()
 createChangeGeneric sourceWallet dstWallet submitMode createCoins addressMsg value count = do
   fee <- getUser TFee
-  walletRef <- get globalWallet
+  walletRef <- getName sourceWallet
   let
     coinsList = replicate count value
     maxTxSize = 30
